@@ -1,0 +1,21 @@
+﻿# Local PostgreSQL for development: `docker compose up -d`
+# The official image ships the btree_gist extension used by the time-range constraints.
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: snowber
+      POSTGRES_PASSWORD: snowber
+      POSTGRES_DB: snowber
+    ports:
+      - "5433:5432"
+    volumes:
+      - snowber-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U snowber"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  snowber-db:

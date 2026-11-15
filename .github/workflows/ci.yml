@@ -1,0 +1,28 @@
+# Type-check, lint, unit tests and a production build on every push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # Builds and unit tests don't connect to a database, but the config reads these.
+      DATABASE_URL: postgresql://snowber:snowber@localhost:5432/snowber
+      BETTER_AUTH_SECRET: ci-only-secret-not-used-in-production
+      BETTER_AUTH_URL: http://localhost:3000
+      GEOCODER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci # postinstall runs `prisma generate`
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

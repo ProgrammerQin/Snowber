@@ -1,0 +1,355 @@
+// Snowber data model.
+// The database connection URL lives in prisma.config.ts (Prisma 7).
+// Two things Prisma cannot express are added by hand in
+// migrations/20261106000100_time_range_constraints:
+//   - exclusion constraints that stop overlapping shifts and overlapping approved tool rentals
+//   - CHECK constraints for time ranges and review ratings
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────── Enums ─────────────────────────
+
+enum Role {
+  HOMEOWNER
+  CLEANER
+  CONTROLLER
+}
+
+enum LotSize {
+  SMALL
+  MEDIUM
+  LARGE
+}
+
+enum WindowStatus {
+  OPEN
+  CLOSED
+}
+
+enum JobStatus {
+  REQUESTED
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CONFIRMED
+  DISPUTED
+  CANCELLED
+}
+
+enum PhotoKind {
+  BEFORE
+  AFTER
+}
+
+enum ToolType {
+  SHOVEL
+  SNOW_BLOWER
+  SALT_SPREADER
+  ICE_CHOPPER
+}
+
+enum ToolStatus {
+  AVAILABLE
+  MAINTENANCE
+  RETIRED
+}
+
+enum RentalStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  RETURNED
+  CANCELLED
+}
+
+enum LedgerType {
+  EARNING
+  RENTAL_FEE
+  PAYOUT
+  ADJUSTMENT
+}
+
+enum PaymentStatus {
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+
+// ───────────────── Better Auth tables ─────────────────
+// Field names follow Better Auth's core schema; `role` and the cleaner
+// profile fields are Snowber additions (see `user.additionalFields` in src/lib/auth.ts).
+
+model User {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  role        Role    @default(HOMEOWNER)
+  phone       String?
+  // Cleaner profile: where routes start, and whether they own a snow blower.
+  homeAddress String?
+  homeLat     Float?
+  homeLng     Float?
+  ownsBlower  Boolean @default(false)
+
+  sessions        Session[]
+  accounts        Account[]
+  properties      Property[]
+  jobsAsHomeowner Job[]           @relation("HomeownerJobs")
+  jobsAsCleaner   Job[]           @relation("CleanerJobs")
+  shifts          Shift[]
+  rentals         ToolRental[]
+  ledgerEntries   LedgerEntry[]
+  reviewsWritten  Review[]        @relation("ReviewAuthor")
+  reviewsReceived Review[]        @relation("ReviewSubject")
+  photosUploaded  JobPhoto[]
+  windowsCreated  ServiceWindow[]
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+// ───────────────────── Snowber domain ─────────────────────
+
+model Property {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  label       String?
+  address     String
+  // Geocoded once when the property is saved (Nominatim allows 1 request/second).
+  lat         Float
+  lng         Float
+  approximate Boolean  @default(false)
+  lotSize     LotSize
+  hasSidewalk Boolean  @default(true)
+  notes       String?
+  photoKey    String?
+  createdAt   DateTime @default(now())
+  jobs        Job[]
+
+  @@index([ownerId])
+}
+
+model ServiceWindow {
+  id            String       @id @default(cuid())
+  label         String?
+  startsAt      DateTime
+  endsAt        DateTime
+  // Price multiplier in basis points: 10000 = 1.00x, 12500 = 1.25x.
+  multiplierBps Int          @default(10000)
+  status        WindowStatus @default(OPEN)
+  createdById   String?
+  createdBy     User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  optionJobs    Job[]        @relation("JobWindowOptions")
+  assignedJobs  Job[]        @relation("AssignedWindow")
+
+  @@index([startsAt])
+}
+
+model Shift {
+  id        String   @id @default(cuid())
+  cleanerId String
+  cleaner   User     @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  startsAt  DateTime
+  endsAt    DateTime
+  createdAt DateTime @default(now())
+
+  @@index([cleanerId, startsAt])
+}
+
+model Job {
+  id               String          @id @default(cuid())
+  propertyId       String
+  property         Property        @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  homeownerId      String
+  homeowner        User            @relation("HomeownerJobs", fields: [homeownerId], references: [id], onDelete: Restrict)
+  status           JobStatus       @default(REQUESTED)
+  includeSidewalk  Boolean         @default(true)
+  includeSalt      Boolean         @default(false)
+  notes            String?
+  // Server-computed from the rate card; never trusted from the client.
+  priceCents       Int
+  tipCents         Int             @default(0)
+  estMinutes       Int
+  requiresBlower   Boolean         @default(false)
+  // Windows the homeowner accepts; the controller picks one when assigning.
+  windowOptions    ServiceWindow[] @relation("JobWindowOptions")
+  assignedWindowId String?
+  assignedWindow   ServiceWindow?  @relation("AssignedWindow", fields: [assignedWindowId], references: [id], onDelete: SetNull)
+  cleanerId        String?
+  cleaner          User?           @relation("CleanerJobs", fields: [cleanerId], references: [id], onDelete: SetNull)
+  routeOrder       Int?
+  comparisonKey    String?
+  disputeReason    String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  assignedAt       DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  confirmedAt      DateTime?
+  cancelledAt      DateTime?
+  photos           JobPhoto[]
+  reviews          Review[]
+  payment          Payment?
+  ledgerEntries    LedgerEntry[]
+
+  @@index([status])
+  @@index([homeownerId])
+  @@index([cleanerId])
+  @@index([assignedWindowId])
+}
+
+model JobPhoto {
+  id           String    @id @default(cuid())
+  jobId        String
+  job          Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  kind         PhotoKind
+  // Object keys only; pages get short-lived presigned URLs.
+  displayKey   String
+  thumbKey     String
+  width        Int
+  height       Int
+  // EXIF capture time, read before metadata is stripped.
+  takenAt      DateTime?
+  flagged      Boolean   @default(false)
+  flagReason   String?
+  uploadedById String
+  uploadedBy   User      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  createdAt    DateTime  @default(now())
+
+  @@index([jobId])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  subjectId String
+  subject   User     @relation("ReviewSubject", fields: [subjectId], references: [id], onDelete: Cascade)
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, authorId])
+  @@index([subjectId])
+}
+
+// Mock payment record behind the PaymentProvider interface (src/lib/payments.ts).
+model Payment {
+  id            String        @id @default(cuid())
+  jobId         String        @unique
+  job           Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  provider      String        @default("mock")
+  externalId    String?
+  amountCents   Int
+  refundedCents Int           @default(0)
+  status        PaymentStatus @default(PAID)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Tool {
+  id        String       @id @default(cuid())
+  name      String
+  type      ToolType
+  feeCents  Int
+  status    ToolStatus   @default(AVAILABLE)
+  photoKey  String?
+  notes     String?
+  createdAt DateTime     @default(now())
+  rentals   ToolRental[]
+}
+
+model ToolRental {
+  id            String        @id @default(cuid())
+  toolId        String
+  tool          Tool          @relation(fields: [toolId], references: [id], onDelete: Restrict)
+  cleanerId     String
+  cleaner       User          @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  startsAt      DateTime
+  endsAt        DateTime
+  status        RentalStatus  @default(REQUESTED)
+  feeCents      Int
+  createdAt     DateTime      @default(now())
+  decidedAt     DateTime?
+  ledgerEntries LedgerEntry[]
+
+  @@index([toolId, startsAt])
+  @@index([cleanerId])
+}
+
+// Append-only: a cleaner's balance is SUM(amountCents).
+model LedgerEntry {
+  id          String      @id @default(cuid())
+  cleanerId   String
+  cleaner     User        @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  type        LedgerType
+  amountCents Int
+  description String
+  jobId       String?
+  job         Job?        @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  rentalId    String?
+  rental      ToolRental? @relation(fields: [rentalId], references: [id], onDelete: SetNull)
+  createdAt   DateTime    @default(now())
+
+  // Credit a job once and charge a rental once (NULLs are distinct in PostgreSQL).
+  @@unique([jobId, type])
+  @@unique([rentalId, type])
+  @@index([cleanerId, createdAt])
+}
