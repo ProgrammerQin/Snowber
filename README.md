@@ -1,5 +1,14 @@
 # Project Proposal: Snowber (Neighborhood Snow Clearing & Dispatch Platform)
 
+## Team Members
+
+| Name | Student Number | Email |
+| --- | --- | --- |
+| Cheng Zhao | 1012816954 | chan.zhao@mail.utoronto.ca |
+| Qin Yang | 1012711399 | qin.yang@mail.utoronto.ca |
+| Fuchun Chai | 1003052082 | fuchun.chai@mail.utoronto.ca |
+| Dhruv Dhawan | 1002348952 | d.dhawan@mail.utoronto.ca |
+
 ## 1. Motivation
 
 ### The Problem
